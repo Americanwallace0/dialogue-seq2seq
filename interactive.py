@@ -66,9 +66,9 @@ class Interactive(Translator):
 
             def predict_word(dec_seq, dec_pos, src_seq, enc_output, n_active_inst, n_bm):
                 dec_output, *_ = self.model.decoder(dec_seq, dec_pos, src_seq, enc_output)
-                dec_output = dec_output[:, -1, :]  # Pick the last step: (bh * bm) * d_h
+                dec_output = dec_output[:, -1, :]  # pick the last step: (bh * bm) * d_h
                 word_prob = self.model.tgt_word_prj(dec_output)
-                word_prob[:, Constants.UNK] = -float('inf')
+                word_prob[:, Constants.UNK] = -float('inf') # zero out probability of <unk>
                 word_prob = F.log_softmax(word_prob, dim=1)
                 word_prob = word_prob.view(n_active_inst, n_bm, -1)
 
@@ -89,7 +89,7 @@ class Interactive(Translator):
             dec_pos = prepare_beam_dec_pos(len_dec_seq, n_active_inst, n_bm)
             word_prob = predict_word(dec_seq, dec_pos, src_seq, enc_output, n_active_inst, n_bm)
 
-            # Update the beam with predicted word prob information and collect incomplete instances
+            #- Update the beam with predicted word prob information and collect incomplete instances
             active_inst_idx_list = collect_active_inst_idx_list(
                 inst_dec_beams, word_prob, inst_idx_to_position_map)
 
@@ -111,7 +111,7 @@ class Interactive(Translator):
 
             #- Encode
             src_enc, *_ = self.model.encoder(src_seq, src_pos)
-            src_enc, *_ = self.model.session(src_enc)
+            src_enc, *_ = self.model.session(src_enc, src_seq)
 
             #- Repeat data for beam search
             n_bm = self.opt.beam_size

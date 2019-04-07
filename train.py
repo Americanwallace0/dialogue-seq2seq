@@ -10,14 +10,13 @@ import torch.utils.data
 import numpy as np
 
 from utils.dataset import TranslationDataset, paired_collate_fn, prepare_dataloaders
-from utils.metrics import cal_performance, cal_bleu_score
+from utils.metrics import cal_performance
 from seq2seq import Constants
 from seq2seq.Models import Seq2Seq
 from seq2seq.Optim import ScheduledOptim
 
 
-def train_epoch(model, training_data, optimizer, device, mmi_factor, max_ngram_order,
-    label_smoothing=True, bleu_smoothing=False):
+def train_epoch(model, training_data, optimizer, device, mmi_factor, label_smoothing=True):
     ''' Epoch operation in training phase '''
     model.train()   # training mode
 
@@ -25,8 +24,6 @@ def train_epoch(model, training_data, optimizer, device, mmi_factor, max_ngram_o
     total_loss = 0
     n_word_total = 0
     n_word_correct = 0
-    ngram_matches = np.zeros((max_ngram_order))
-    possible_ngram_matches = np.zeros((max_ngram_order))
 
     #- Iterate through batches for training
     for batch in tqdm(
@@ -56,13 +53,10 @@ def train_epoch(model, training_data, optimizer, device, mmi_factor, max_ngram_o
         matches = 0
         possible_matches = 0
         for i in range(n_steps):
-            loss_, n_correct_, (matches_, possible_matches_) = cal_performance(
-                preds[i], gold[:, i, :].squeeze(1), smoothing=label_smoothing,
-                mmi_factor=mmi_factor, max_order=max_ngram_order)
+            loss_, n_correct_ = cal_performance(
+                preds[i], gold[:, i, :].squeeze(1), smoothing=label_smoothing, mmi_factor=mmi_factor)
             loss += loss_
             n_correct += n_correct_
-            matches += matches_
-            possible_matches += possible_matches_
         loss.backward()
 
         #- Optimizer step
@@ -72,17 +66,13 @@ def train_epoch(model, training_data, optimizer, device, mmi_factor, max_ngram_o
         total_loss += loss.item()
         n_word_correct += n_correct
         n_word_total += gold.ne(Constants.PAD).sum().item()
-        ngram_matches += matches
-        possible_ngram_matches += possible_matches_
 
     loss_per_word = total_loss/n_word_total
     accuracy = n_word_correct/n_word_total
-    bleu, *_ = cal_bleu_score(max_ngram_order, ngram_matches, possible_ngram_matches,
-        n_word_total, n_word_total, smoothing=bleu_smoothing)
     
-    return loss_per_word, accuracy, bleu
+    return loss_per_word, accuracy
 
-def eval_epoch(model, validation_data, device, mmi_factor, max_ngram_order, bleu_smoothing=False):
+def eval_epoch(model, validation_data, device, mmi_factor):
     ''' Epoch operation in evaluation phase '''
     model.eval()    # inference mode
 
@@ -90,8 +80,6 @@ def eval_epoch(model, validation_data, device, mmi_factor, max_ngram_order, bleu
     total_loss = 0
     n_word_total = 0
     n_word_correct = 0
-    ngram_matches = np.zeros((max_ngram_order))
-    possible_ngram_matches = np.zeros((max_ngram_order))
 
     with torch.no_grad():
         #- Iterate through validation batches
@@ -120,9 +108,8 @@ def eval_epoch(model, validation_data, device, mmi_factor, max_ngram_order, bleu
             matches = 0
             possible_matches = 0
             for i in range(n_steps):
-                loss_, n_correct_, (matches_, possible_matches_) = cal_performance(
-                    preds[i], gold[:, i, :].squeeze(1), smoothing=False,
-                    mmi_factor=mmi_factor, max_order=max_ngram_order)
+                loss_, n_correct_ = cal_performance(
+                    preds[i], gold[:, i, :].squeeze(1), smoothing=False, mmi_factor=mmi_factor)
                 loss += loss_
                 n_correct += n_correct_
                 matches += matches_
@@ -131,16 +118,12 @@ def eval_epoch(model, validation_data, device, mmi_factor, max_ngram_order, bleu
             #- Logging
             total_loss += loss.item()
             n_word_correct += n_correct
-            ngram_matches += matches
-            possible_ngram_matches += possible_matches
             n_word_total += gold.ne(Constants.PAD).sum().item()
 
     loss_per_word = total_loss / n_word_total
     accuracy = n_word_correct / n_word_total
-    bleu, *_ = cal_bleu_score(max_ngram_order, ngram_matches, possible_ngram_matches,
-        n_word_total, n_word_total, smoothing=bleu_smoothing)
     
-    return loss_per_word, accuracy, bleu
+    return loss_per_word, accuracy
 
 def train(model, training_data, validation_data, optimizer, device, opt, epoch):
     ''' Start training '''
@@ -156,8 +139,8 @@ def train(model, training_data, validation_data, optimizer, device, opt, epoch):
             log_train_file, log_valid_file))
 
         with open(log_train_file, 'w') as log_tf, open(log_valid_file, 'w') as log_vf:
-            log_tf.write('epoch,loss,ppl,accuracy,bleu\n')
-            log_vf.write('epoch,loss,ppl,accuracy,bleu\n')
+            log_tf.write('epoch,loss,ppl,accuracy\n')
+            log_vf.write('epoch,loss,ppl,accuracy\n')
 
     #- Train and iterate through epochs 
     valid_accus = []
@@ -166,22 +149,21 @@ def train(model, training_data, validation_data, optimizer, device, opt, epoch):
 
         #- Pass through training data
         start = time.time()
-        train_loss, train_accu, train_bleu = train_epoch(
-            model, training_data, optimizer, device, opt.mmi_factor, opt.max_ngram_order,
-            label_smoothing=opt.label_smoothing, bleu_smoothing=opt.bleu_smoothing)
+        train_loss, train_accu = train_epoch(
+            model, training_data, optimizer, device, opt.mmi_factor, label_smoothing=opt.label_smoothing)
         print('  - (Training)   ppl: {ppl: 8.5f}, accuracy: {accu:3.3f} %, '\
-              'loss/word: {loss:8.5f}, elapse: {elapse:3.3f} min, bleu: {bleu:1.5f}'.format(
+              'loss/word: {loss:8.5f}, elapse: {elapse:3.3f} min'.format(
                   ppl=math.exp(min(train_loss, 100)), accu=100*train_accu,
-                  loss=train_loss, elapse=(time.time()-start)/60, bleu=train_bleu))
+                  loss=train_loss, elapse=(time.time()-start)/60))
 
         #- Pass through validation data
         start = time.time()
-        valid_loss, valid_accu, valid_bleu = eval_epoch(
-            model, validation_data, device, opt.mmi_factor, opt.max_ngram_order, bleu_smoothing=opt.bleu_smoothing)
+        valid_loss, valid_accu = eval_epoch(
+            model, validation_data, device, opt.mmi_factor)
         print('  - (Validation) gppl: {ppl: 8.5f}, accuracy: {accu:3.3f} %, '\
-                'loss/word: {loss:8.5f}, elapse: {elapse:3.3f} min, bleu: {bleu:1.5f}'.format(
+                'loss/word: {loss:8.5f}, elapse: {elapse:3.3f} min'.format(
                     ppl=math.exp(min(valid_loss, 100)), accu=100*valid_accu,
-                    loss=valid_loss, elapse=(time.time()-start)/60, bleu=valid_bleu))
+                    loss=valid_loss, elapse=(time.time()-start)/60))
 
         valid_accus += [valid_accu]
 
@@ -206,12 +188,12 @@ def train(model, training_data, validation_data, optimizer, device, opt, epoch):
         #- Save logs
         if log_train_file and log_valid_file:
             with open(log_train_file, 'a') as log_tf, open(log_valid_file, 'a') as log_vf:
-                log_tf.write('{epoch},{loss: 8.5f},{ppl: 8.5f},{accu:3.3f},{bleu:1.5f}\n'.format(
+                log_tf.write('{epoch},{loss: 8.5f},{ppl: 8.5f},{accu:3.3f}\n'.format(
                     epoch=epoch_i, loss=train_loss,
-                    ppl=math.exp(min(train_loss, 100)), accu=100*train_accu, bleu=train_bleu))
-                log_vf.write('{epoch},{loss: 8.5f},{ppl: 8.5f},{accu:3.3f},{bleu:1.5f}\n'.format(
+                    ppl=math.exp(min(train_loss, 100)), accu=100*train_accu))
+                log_vf.write('{epoch},{loss: 8.5f},{ppl: 8.5f},{accu:3.3f}\n'.format(
                     epoch=epoch_i, loss=valid_loss,
-                    ppl=math.exp(min(valid_loss, 100)), accu=100*valid_accu, bleu=valid_bleu))
+                    ppl=math.exp(min(valid_loss, 100)), accu=100*valid_accu))
 
 def main():
     ''' Main function '''
@@ -234,7 +216,7 @@ def main():
     parser.add_argument('-d_v', type=int, default=64)
 
     parser.add_argument('-n_head', type=int, default=8)
-    parser.add_argument('-n_layers', type=int, default=3)
+    parser.add_argument('-n_layers', type=int, default=6)
     parser.add_argument('-n_warmup_steps', type=int, default=4000)
 
     parser.add_argument('-dropout', type=float, default=0.1)
@@ -248,9 +230,7 @@ def main():
     parser.add_argument('-no_cuda', action='store_true')
 
     parser.add_argument('-label_smoothing', action='store_true')
-    parser.add_argument('-bleu_smoothing', action='store_true')
     parser.add_argument('-mmi_factor', type=float, default=0.0)
-    parser.add_argument('-max_ngram_order', type=int, default=4)
 
     opt = parser.parse_args()
     opt.cuda = not opt.no_cuda

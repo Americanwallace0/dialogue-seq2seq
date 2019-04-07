@@ -40,7 +40,7 @@ class Translator(object):
             n_layers=model_opt.n_layers,
             n_head=model_opt.n_head,
             dropout=model_opt.dropout,
-            train_for_mmi_loss=model_opt.loss_mmi,
+            mmi_factor=model_opt.mmi_factor,
             src_emb_file=model_opt.src_emb_file,
             tgt_emb_file=model_opt.tgt_emb_file)
 
@@ -165,7 +165,7 @@ class Translator(object):
                 src_seq_step = src_seq[:, i, :].squeeze(1)
                 src_pos_step = src_pos[:, i, :].squeeze(1)
                 src_enc_step, *_ = self.model.encoder(src_seq_step, src_pos_step)
-                src_enc_step, *_ = self.model.session(src_enc_step)
+                src_enc_step, *_ = self.model.session(src_enc_step, src_seq_step)
 
                 #- Repeat data for beam search
                 n_bm = self.opt.beam_size
@@ -181,8 +181,7 @@ class Translator(object):
                 inst_idx_to_position_map = get_inst_idx_to_tensor_position_map(active_inst_idx_list)
 
                 #- Decode
-                for len_dec_seq in tqdm(range(1, self.model_opt.max_subseq_len + 1),
-                    mininterval=2, desc='  - (Test / Words)', leave=False):
+                for len_dec_seq in range(1, self.model_opt.max_subseq_len + 1):
 
                     active_inst_idx_list = beam_decode_step(
                         inst_dec_beams, len_dec_seq, src_seq_step, src_enc_step, inst_idx_to_position_map, n_bm)

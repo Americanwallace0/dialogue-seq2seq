@@ -2,12 +2,11 @@
 import torch
 import torch.nn.functional as F
 import collections
-import numpy as np
 
 import seq2seq.Constants as Constants
 
 
-def cal_performance(pred, gold, smoothing=False, max_order=4, mmi_factor=1.0):
+def cal_performance(pred, gold, smoothing=False, mmi_factor=1.0):
     '''
     Calculate accuracy and loss with
     1) label smoothing if specified
@@ -22,15 +21,12 @@ def cal_performance(pred, gold, smoothing=False, max_order=4, mmi_factor=1.0):
         #- Calculate CE loss with MLE objective
         loss = cal_mle_loss(pred, gold, smoothing)
         pred = pred.max(1)[1]
-
-    #- Calculate batch statistics for BLEU later
-    matches, possible_matches = cal_ngram_matches(pred.view(*gold.size()), gold, max_order=max_order)
     
     gold = gold.contiguous().view(-1)
     non_pad_mask = gold.ne(Constants.PAD)
     n_correct = pred.eq(gold)
     n_correct = n_correct.masked_select(non_pad_mask).sum().item()
-    return loss, n_correct, (matches, possible_matches)
+    return loss, n_correct
     
 def cal_mmi_loss(pred_session, pred_no_session, gold, smoothing=True, mmi_factor=1.0):
     '''
@@ -87,7 +83,7 @@ def cal_mle_loss(pred, gold, smoothing):
 
     return loss
 
-def cal_ngram_matches(pred, gold, max_order=4):
+def cal_bleu_score(pred, gold, max_order=4):
     ''' Calculates n-gram matches per batch '''
     def _get_ngrams(segment, n):
         ''' Extracts all n-grams up to a given maximum order from an input segment '''
@@ -99,22 +95,16 @@ def cal_ngram_matches(pred, gold, max_order=4):
         return ngram_counts
 
     #- Set up stats tracking
-    matches_by_order = np.zeros((max_order), dtype=np.int32)
-    possible_matches_by_order = np.zeros((max_order), dtype=np.int32)
+    matches_by_order = [0] * max_order
+    possible_matches_by_order = [0] * max_order
     reference_length = 0
     prediction_length = 0
 
-    n_insts = gold.size(0)
+    assert len(pred) == len(gold)
 
-    #- Loop through elements in batch
-    for i in range(n_insts):
-        reference = gold[i, :].squeeze(0)
-        reference = reference.masked_select(reference.ne(Constants.PAD))
-        reference = [i.item() for i in reference]
+    #- Loop through elements in corpus
+    for prediction, reference in zip(pred, gold):
         reference_length += len(reference)
-        prediction = pred[i, :].squeeze(0)
-        prediction = prediction.masked_select(prediction.ne(Constants.PAD))
-        prediction = [i.item() for i in prediction]
         prediction_length += len(prediction)
 
         #- Collect n-grams
@@ -132,16 +122,9 @@ def cal_ngram_matches(pred, gold, max_order=4):
             if possible_matches > 0:
                 possible_matches_by_order[order-1] += possible_matches
 
-    return (matches_by_order, possible_matches_by_order)
-
-def cal_bleu_score(max_order, matches_by_order, possible_matches_by_order,
-    prediction_length, reference_length, smoothing=False):
-    ''' Calculates BLEU score given metrics accumiulated over batches '''
-    assert max_order == len(matches_by_order) == len(possible_matches_by_order)
-
     #- Calculate precision
     precisions = [0] * max_order
-    for i in range(0, max_order):
+    for i in range(max_order):
         if smoothing:
             precisions[i] = (matches_by_order[i] + 1.) / (possible_matches_by_order[i] + 1.)
         else:
